@@ -1,131 +1,148 @@
-// @ts-nocheck
-import "dotenv/config";
 import express from "express";
-import { z } from "zod";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { NinjaApiClient, encodeDf } from "./ninja.js";
+import type { Request, Response } from "express";
+import { NinjaApiClient, encodeDf } from "./ninja";
 
-const PORT = parseInt(process.env.PORT || "3030", 10);
-const HOST = process.env.HOST || "127.0.0.1";
+// ----------------------------
+// Config from environment
+// ----------------------------
+const PORT = Number(process.env.PORT ?? 3030);
 
-const required = (name: string) => {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
-};
+const NINJA_BASE_URL = process.env.NINJA_BASE_URL?.trim() || "https://api.ninjaone.com";
+const NINJA_CLIENT_ID = process.env.NINJA_CLIENT_ID?.trim() || "";
+const NINJA_CLIENT_SECRET = process.env.NINJA_CLIENT_SECRET?.trim() || "";
+const NINJA_SCOPE = process.env.NINJA_SCOPE?.trim() || "api";
+const NINJA_RUNSCRIPT_STYLE =
+  (process.env.NINJA_RUNSCRIPT_STYLE?.trim() as "actions" | "legacy" | undefined) || "actions";
 
-const ninja = new NinjaApiClient({
-  baseUrl: required("NINJA_BASE_URL"),
-  clientId: required("NINJA_CLIENT_ID"),
-  clientSecret: required("NINJA_CLIENT_SECRET"),
-  scope: process.env.NINJA_SCOPE,
-  runscriptStyle: (process.env.NINJA_RUNSCRIPT_STYLE as any) || 'actions',
-});
+const READ_ONLY = String(process.env.READ_ONLY ?? "true").toLowerCase() !== "false"; // default: read-only
 
-const server = new McpServer({ name: "ninjaone-mcp", version: "0.2.0" });
-
-// --- Tools ---
-server.tool("listOrganizations", {
-  description: "List organizations visible to this API client.",
-  inputSchema: z.object({}).strict(),
-  handler: async () => {
-    const data = await ninja.listOrganizations();
-    return { content: [{ type: "json", data }] };
-  },
-});
-
-server.tool("listDevices", {
-  description: "List devices; optional filters via NinjaOne device filter syntax (df).",
-  inputSchema: z
-    .object({
-      pageSize: z.number().int().positive().max(500).optional(),
-      cursor: z.string().optional(),
-      orgId: z.union([z.string(), z.number()]).optional().describe("Filter by organization id"),
-      status: z.enum(["APPROVED", "PENDING", "DECOMMISSIONED"]).optional(),
-      classIn: z.array(z.enum(["WINDOWS_WORKSTATION", "WINDOWS_SERVER", "MAC", "LINUX_WORKSTATION", "LINUX_SERVER"]).optional()).optional(),
-      online: z.boolean().optional(),
-    })
-    .strict(),
-  handler: async ({ input }) => {
-    const df = encodeDf([
-      input.orgId ? `org = ${input.orgId}` : undefined,
-      input.status ? `status eq ${input.status}` : undefined,
-      input.classIn?.length ? `class in (${input.classIn.join(",")})` : undefined,
-      typeof input.online === "boolean" ? (input.online ? "online" : "offline") : undefined,
-    ]);
-    const data = await ninja.listDevices({ pageSize: input.pageSize, cursor: input.cursor, df });
-    return { content: [{ type: "json", data }] };
-  },
-});
-
-server.tool("getDevice", {
-  description: "Get a single device by id.",
-  inputSchema: z.object({ deviceId: z.union([z.number().int(), z.string()]) }).strict(),
-  handler: async ({ input }) => {
-    const data = await ninja.getDevice(input.deviceId);
-    return { content: [{ type: "json", data }] };
-  },
-});
-
-server.tool("listAlerts", {
-  description: "List alerts; filter by status (e.g., OPEN, CLOSED).",
-  inputSchema: z
-    .object({ pageSize: z.number().int().positive().max(500).optional(), cursor: z.string().optional(), status: z.string().optional() })
-    .strict(),
-  handler: async ({ input }) => {
-    const data = await ninja.listAlerts({ pageSize: input.pageSize, cursor: input.cursor, status: input.status });
-    return { content: [{ type: "json", data }] };
-  },
-});
-
-// --- Mutating tools (v0.2). Protected by READ_ONLY env. ---
-const assertWritable = () => {
-  if ((process.env.READ_ONLY ?? 'true').toLowerCase() !== 'false') {
-    throw new Error('Mutating tools are disabled. Set READ_ONLY=false to enable.');
+function assertWritable() {
+  if (READ_ONLY) {
+    throw new Error("Mutating endpoints are disabled. Set READ_ONLY=false to enable.");
   }
-};
+}
 
-server.tool("resetAlert", {
-  description: "Reset/close an alert (triggered condition) by uid. If activity/note provided, uses POST /v2/alert/{uid}/reset.",
-  inputSchema: z
-    .object({
-      uid: z.string(),
-      activity: z.string().optional(),
-      note: z.string().optional(),
-    })
-    .strict(),
-  handler: async ({ input }) => {
-    assertWritable();
-    const body = input.activity || input.note ? { activity: input.activity, note: input.note } : undefined;
-    const data = await ninja.resetAlert(input.uid, body as any);
-    return { content: [{ type: "json", data }] };
-  },
+// ----------------------------
+// Ninja client
+// ----------------------------
+const ninja = new NinjaApiClient({
+  baseUrl: NINJA_BASE_URL,
+  clientId: NINJA_CLIENT_ID,
+  clientSecret: NINJA_CLIENT_SECRET,
+  scope: NINJA_SCOPE,
+  runscriptStyle: NINJA_RUNSCRIPT_STYLE,
 });
 
-server.tool("runScript", {
-  description: "Run a script on a device. Honors NINJA_RUNSCRIPT_STYLE=actions|legacy. Set dryRun=true to simulate.",
-  inputSchema: z
-    .object({
-      deviceId: z.union([z.number().int(), z.string()]),
-      scriptId: z.union([z.number().int(), z.string()]),
-      parameters: z.record(z.any()).default({}).optional(),
-      dryRun: z.boolean().default(true).optional(),
-    })
-    .strict(),
-  handler: async ({ input }) => {
-    assertWritable();
-    const data = await ninja.runScript(input.deviceId, input.scriptId, input.parameters, input.dryRun);
-    return { content: [{ type: "json", data }] };
-  },
-});
-
-// --- HTTP transport ---
+// ----------------------------
+// Express app
+// ----------------------------
 const app = express();
-const transport = new StreamableHTTPServerTransport(app);
+app.use(express.json());
 
-await server.connect(transport);
+// Health
+app.get("/health", (_req: Request, res: Response) => {
+  res.json({ ok: true, name: "ninjaone-mcp", version: "0.2.0", readOnly: READ_ONLY });
+});
 
-app.listen(PORT, HOST, () => {
-  console.log(`MCP HTTP server listening on http://${HOST}:${PORT}/mcp`);
+// List organizations
+app.get("/orgs", async (_req, res) => {
+  try {
+    const data = await ninja.listOrganizations();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+// List devices with optional filters (query params)
+app.get("/devices", async (req, res) => {
+  try {
+    const pageSize = req.query.pageSize ? Number(req.query.pageSize) : undefined;
+    const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
+    const orgId = req.query.orgId ? String(req.query.orgId) : undefined;
+    const status = req.query.status ? String(req.query.status) : undefined;
+
+    const classIn =
+      typeof req.query.classIn === "string"
+        ? String(req.query.classIn)
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+
+    const online =
+      typeof req.query.online === "string"
+        ? /^(true|1|yes)$/i.test(String(req.query.online))
+        : undefined;
+
+    const df = encodeDf([
+      orgId ? `org = ${orgId}` : undefined,
+      status ? `status eq ${status}` : undefined,
+      classIn && classIn.length ? `class in (${classIn.join(",")})` : undefined,
+      typeof online === "boolean" ? (online ? "online" : "offline") : undefined,
+    ]);
+
+    const data = await ninja.listDevices({ pageSize, cursor, df });
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+// Get a single device
+app.get("/devices/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const data = await ninja.getDevice(id);
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+// List alerts
+app.get("/alerts", async (req, res) => {
+  try {
+    const pageSize = req.query.pageSize ? Number(req.query.pageSize) : undefined;
+    const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
+    const status = req.query.status ? String(req.query.status) : undefined;
+    const data = await ninja.listAlerts({ pageSize, cursor, status });
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+// Reset / close alert (mutating)
+app.post("/alerts/:uid/reset", async (req, res) => {
+  try {
+    assertWritable();
+    const uid = req.params.uid;
+    const { activity, note } = req.body ?? {};
+    const body = activity || note ? { activity, note } : undefined;
+    const data = await ninja.resetAlert(uid, body as any);
+    res.json(data);
+  } catch (err: any) {
+    const code = READ_ONLY ? 403 : 500;
+    res.status(code).json({ error: err?.message || String(err) });
+  }
+});
+
+// Run script on a device (mutating)
+app.post("/scripts/run", async (req, res) => {
+  try {
+    assertWritable();
+    const { deviceId, scriptId, parameters = {}, dryRun = true } = req.body ?? {};
+    const data = await ninja.runScript(deviceId, scriptId, parameters, Boolean(dryRun));
+    res.json(data);
+  } catch (err: any) {
+    const code = READ_ONLY ? 403 : 500;
+    res.status(code).json({ error: err?.message || String(err) });
+  }
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`✅ REST server up on http://localhost:${PORT}`);
+  console.log(`   READ_ONLY=${READ_ONLY}  base=${NINJA_BASE_URL}  style=${NINJA_RUNSCRIPT_STYLE}`);
 });
