@@ -1,5 +1,4 @@
-import express from "express";
-import type { Request, Response } from "express";
+import express, { type Request, type Response } from "express";
 import { NinjaApiClient, encodeDf } from "./ninja";
 
 // ----------------------------
@@ -7,16 +6,17 @@ import { NinjaApiClient, encodeDf } from "./ninja";
 // ----------------------------
 const PORT = Number(process.env.PORT ?? 3030);
 
-const NINJA_BASE_URL = process.env.NINJA_BASE_URL?.trim() || "https://api.ninjaone.com";
-const NINJA_CLIENT_ID = process.env.NINJA_CLIENT_ID?.trim() || "";
-const NINJA_CLIENT_SECRET = process.env.NINJA_CLIENT_SECRET?.trim() || "";
-const NINJA_SCOPE = process.env.NINJA_SCOPE?.trim() || "api";
+const NINJA_BASE_URL = (process.env.NINJA_BASE_URL ?? "https://api.ninjaone.com").trim();
+const NINJA_CLIENT_ID = (process.env.NINJA_CLIENT_ID ?? "").trim();
+const NINJA_CLIENT_SECRET = (process.env.NINJA_CLIENT_SECRET ?? "").trim();
+const NINJA_SCOPE = (process.env.NINJA_SCOPE ?? "api").trim();
 const NINJA_RUNSCRIPT_STYLE =
-  (process.env.NINJA_RUNSCRIPT_STYLE?.trim() as "actions" | "legacy" | undefined) || "actions";
+  ((process.env.NINJA_RUNSCRIPT_STYLE ?? "actions").trim() as "actions" | "legacy");
 
-const READ_ONLY = String(process.env.READ_ONLY ?? "true").toLowerCase() !== "false"; // default: read-only
+// Read-only by default. Set READ_ONLY=false to allow mutating endpoints.
+const READ_ONLY = String(process.env.READ_ONLY ?? "true").toLowerCase() !== "false";
 
-function assertWritable() {
+function assertWritable(): void {
   if (READ_ONLY) {
     throw new Error("Mutating endpoints are disabled. Set READ_ONLY=false to enable.");
   }
@@ -45,17 +45,18 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 // List organizations
-app.get("/orgs", async (_req, res) => {
+app.get("/orgs", async (_req: Request, res: Response) => {
   try {
     const data = await ninja.listOrganizations();
     res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || String(err) });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
   }
 });
 
 // List devices with optional filters (query params)
-app.get("/devices", async (req, res) => {
+app.get("/devices", async (req: Request, res: Response) => {
   try {
     const pageSize = req.query.pageSize ? Number(req.query.pageSize) : undefined;
     const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
@@ -84,60 +85,74 @@ app.get("/devices", async (req, res) => {
 
     const data = await ninja.listDevices({ pageSize, cursor, df });
     res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || String(err) });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
   }
 });
 
 // Get a single device
-app.get("/devices/:id", async (req, res) => {
+app.get("/devices/:id", async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
     const data = await ninja.getDevice(id);
     res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || String(err) });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
   }
 });
 
 // List alerts
-app.get("/alerts", async (req, res) => {
+app.get("/alerts", async (req: Request, res: Response) => {
   try {
     const pageSize = req.query.pageSize ? Number(req.query.pageSize) : undefined;
     const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
     const status = req.query.status ? String(req.query.status) : undefined;
     const data = await ninja.listAlerts({ pageSize, cursor, status });
     res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || String(err) });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
   }
 });
 
 // Reset / close alert (mutating)
-app.post("/alerts/:uid/reset", async (req, res) => {
+app.post("/alerts/:uid/reset", async (req: Request, res: Response) => {
   try {
     assertWritable();
     const uid = req.params.uid;
-    const { activity, note } = req.body ?? {};
-    const body = activity || note ? { activity, note } : undefined;
-    const data = await ninja.resetAlert(uid, body as any);
+    const body = req.body as { activity?: string; note?: string } | undefined;
+    const data = await ninja.resetAlert(uid, body);
     res.json(data);
-  } catch (err: any) {
+  } catch (err: unknown) {
     const code = READ_ONLY ? 403 : 500;
-    res.status(code).json({ error: err?.message || String(err) });
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(code).json({ error: message });
   }
 });
 
 // Run script on a device (mutating)
-app.post("/scripts/run", async (req, res) => {
+app.post("/scripts/run", async (req: Request, res: Response) => {
   try {
     assertWritable();
-    const { deviceId, scriptId, parameters = {}, dryRun = true } = req.body ?? {};
-    const data = await ninja.runScript(deviceId, scriptId, parameters, Boolean(dryRun));
+    const body = (req.body ?? {}) as {
+      deviceId: number | string;
+      scriptId: number | string;
+      parameters?: Record<string, unknown>;
+      dryRun?: boolean;
+    };
+    const data = await ninja.runScript(
+      body.deviceId,
+      body.scriptId,
+      body.parameters ?? {},
+      Boolean(body.dryRun ?? true)
+    );
     res.json(data);
-  } catch (err: any) {
+  } catch (err: unknown) {
     const code = READ_ONLY ? 403 : 500;
-    res.status(code).json({ error: err?.message || String(err) });
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(code).json({ error: message });
   }
 });
 
