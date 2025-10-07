@@ -8,7 +8,7 @@ permissions:
   packages: write
   id-token: write
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/ninjaone-mcp
+    IMAGE_NAME: ghcr.io/relayer5521/ninjaone-mcp
 jobs:
   docker:
     runs-on: ubuntu-latest
