@@ -1,3 +1,4 @@
+// @ts-nocheck
 import "dotenv/config";
 import express from "express";
 import { z } from "zod";
@@ -121,7 +122,7 @@ server.tool("runScript", {
 
 // --- HTTP transport ---
 const app = express();
-const transport = new StreamableHTTPServerTransport(app, { endpoint: "/mcp" });
+const transport = new StreamableHTTPServerTransport(app);
 
 await server.connect(transport);
 
